@@ -28,3 +28,5 @@ integration deno task e2e deno task perf
 
 Aucune entrée utilisateur n'est interpolée directement dans les scripts shell :
 tout passe par des variables d'environnement.
+
+Démonstration de merge gouverné (lot 15).
