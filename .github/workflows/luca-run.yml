@@ -1,0 +1,108 @@
+name: luca-run
+
+on:
+  workflow_dispatch:
+    inputs:
+      kind:
+        description: "Type d'exécution"
+        required: true
+        type: string
+      request_id:
+        description: "Identifiant de requête"
+        required: true
+        type: string
+      filter:
+        description: "Filtre de test (targeted_tests)"
+        required: false
+        default: ""
+        type: string
+      command:
+        description: "Commande JSON sandbox"
+        required: false
+        default: ""
+        type: string
+
+run-name: "luca ${{ inputs.kind }} ${{ inputs.request_id }}"
+
+permissions:
+  contents: read
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: Valider et exécuter
+        id: run
+        env:
+          KIND: ${{ inputs.kind }}
+          REQUEST_ID: ${{ inputs.request_id }}
+          FILTER: ${{ inputs.filter }}
+          COMMAND: ${{ inputs.command }}
+        run: |
+          set -u
+          mkdir -p out
+          SCRIPT_EXIT=0
+          echo "kind=$KIND request_id=$REQUEST_ID" > out/report.txt
+
+          case "$KIND" in
+            build) deno task build >> out/report.txt 2>&1 || SCRIPT_EXIT=$? ;;
+            typecheck) deno task typecheck >> out/report.txt 2>&1 || SCRIPT_EXIT=$? ;;
+            lint) deno task lint >> out/report.txt 2>&1 || SCRIPT_EXIT=$? ;;
+            targeted_tests)
+              deno test tests/unit --filter "$FILTER" >> out/report.txt 2>&1 || SCRIPT_EXIT=$?
+              ;;
+            unit_tests) deno task unit >> out/report.txt 2>&1 || SCRIPT_EXIT=$? ;;
+            integration_tests) deno task integration >> out/report.txt 2>&1 || SCRIPT_EXIT=$? ;;
+            e2e_tests) deno task e2e >> out/report.txt 2>&1 || SCRIPT_EXIT=$? ;;
+            performance) deno task perf >> out/report.txt 2>&1 || SCRIPT_EXIT=$? ;;
+            sandbox)
+              if [ -z "$COMMAND" ]; then
+                echo "commande sandbox vide" >> out/report.txt
+                SCRIPT_EXIT=1
+              else
+                EXECUTABLE=$(printf '%s' "$COMMAND" | jq -r '.executable // empty')
+                TIMEOUT_SECONDS=$(printf '%s' "$COMMAND" | jq -r '.timeout_seconds // 30')
+                if [ "$EXECUTABLE" != "deno" ]; then
+                  echo "exécutable non autorisé: $EXECUTABLE" >> out/report.txt
+                  SCRIPT_EXIT=1
+                else
+                  mapfile -t ARGS < <(printf '%s' "$COMMAND" | jq -r '.arguments[]?')
+                  timeout "$TIMEOUT_SECONDS" env -i PATH="$PATH" HOME="$HOME" deno "${ARGS[@]}" >> out/report.txt 2>&1 || SCRIPT_EXIT=$?
+                fi
+              fi
+              ;;
+            *)
+              echo "kind invalide: $KIND" >> out/report.txt
+              SCRIPT_EXIT=1
+              ;;
+          esac
+
+          SHA="${GITHUB_SHA:-unknown}"
+          {
+            printf '{\n'
+            printf '  "kind": "%s",\n' "$KIND"
+            printf '  "request_id": "%s",\n' "$REQUEST_ID"
+            printf '  "sha": "%s",\n' "$SHA"
+            printf '  "exit_code": %d\n' "$SCRIPT_EXIT"
+            printf '}\n'
+          } > out/meta.json
+
+          echo "exit_code=$SCRIPT_EXIT" >> "$GITHUB_OUTPUT"
+          exit "$SCRIPT_EXIT"
+
+      - name: Upload rapport
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: luca-report-${{ inputs.request_id }}
+          path: out/
+          if-no-files-found: warn

@@ -1,0 +1,17 @@
+{
+  "tasks": {
+    "build": "deno check src/main.ts && mkdir -p dist && cp src/*.ts dist/",
+    "typecheck": "deno check src/main.ts tests/unit/main_test.ts tests/integration/server_test.ts tests/e2e/e2e_test.ts",
+    "lint": "deno lint",
+    "unit": "deno test tests/unit",
+    "integration": "deno test --allow-net=127.0.0.1 tests/integration",
+    "e2e": "deno test --allow-net=127.0.0.1 tests/e2e",
+    "perf": "deno bench bench/"
+  },
+  "fmt": {
+    "include": ["src/", "tests/", "bench/"]
+  },
+  "lint": {
+    "include": ["src/", "tests/", "bench/"]
+  }
+}

@@ -1,0 +1,64 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      request_id:
+        description: "Identifiant de requête (optionnel)"
+        required: false
+        default: ""
+        type: string
+
+run-name: "ci ${{ inputs.request_id || github.sha }}"
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: Format
+        run: deno fmt --check
+
+      - name: Lint
+        run: deno lint
+
+      - name: Typecheck
+        run: deno task typecheck
+
+      - name: Tests unitaires
+        run: deno task unit
+
+      - name: Résumé
+        if: always()
+        env:
+          REQUEST_ID: ${{ inputs.request_id || github.run_id }}
+        run: |
+          mkdir -p out
+          {
+            echo "request_id: $REQUEST_ID"
+            echo "sha: ${GITHUB_SHA}"
+            echo "ref: ${GITHUB_REF}"
+            echo "workflow: ${GITHUB_WORKFLOW}"
+          } > out/summary.txt
+
+      - name: Upload résumé
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-report-${{ inputs.request_id || github.run_id }}
+          path: out/
+          if-no-files-found: warn
