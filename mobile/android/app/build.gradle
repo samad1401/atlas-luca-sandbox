@@ -1,0 +1,30 @@
+plugins {
+    id 'com.android.application'
+}
+
+def versionProps = new Properties()
+rootProject.file("version.properties").withInputStream { versionProps.load(it) }
+
+android {
+    namespace "app.liya.lucatest"
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "app.liya.lucatest"
+        minSdk 24
+        targetSdk 34
+        versionCode versionProps.getProperty("versionCode").toInteger()
+        versionName versionProps.getProperty("versionName")
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}

@@ -1,0 +1,150 @@
+name: android-release
+
+on:
+  push:
+    branches:
+      - 'luca-sandbox/android-**'
+    paths:
+      - 'mobile/android/**'
+      - '.github/workflows/android-release.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: Read metadata
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          VC=$(grep -E '^versionCode=' mobile/android/version.properties | cut -d= -f2 | tr -d '[:space:]')
+          VN=$(grep -E '^versionName=' mobile/android/version.properties | cut -d= -f2- | tr -d '[:space:]')
+          if ! printf '%s' "$VC" | grep -Eq '^[0-9]+$'; then
+            echo "versionCode invalide: $VC" >&2
+            exit 1
+          fi
+          NOTES="mobile/android/release-notes/${VC}.txt"
+          if [ ! -f "$NOTES" ]; then
+            echo "Fichier de notes manquant: $NOTES" >&2
+            exit 1
+          fi
+          SIZE=$(wc -c < "$NOTES")
+          if [ "$SIZE" -gt 500 ]; then
+            echo "Notes trop volumineuses: $SIZE octets" >&2
+            exit 1
+          fi
+          echo "version_code=$VC" >> "$GITHUB_OUTPUT"
+          echo "version_name=$VN" >> "$GITHUB_OUTPUT"
+
+      - name: Build
+        shell: bash
+        run: |
+          set -euo pipefail
+          gradle -p mobile/android --no-daemon :app:assembleRelease :app:bundleRelease
+
+      - name: Sign
+        shell: bash
+        env:
+          KS_B64: ${{ secrets.ANDROID_TEST_KEYSTORE_B64 }}
+          KS_PASS: ${{ secrets.ANDROID_TEST_KEYSTORE_PASSWORD }}
+          VC: ${{ steps.meta.outputs.version_code }}
+        run: |
+          set -euo pipefail
+          if [ -z "${KS_B64:-}" ]; then echo "Secret ANDROID_TEST_KEYSTORE_B64 manquant" >&2; exit 1; fi
+          if [ -z "${KS_PASS:-}" ]; then echo "Secret ANDROID_TEST_KEYSTORE_PASSWORD manquant" >&2; exit 1; fi
+          KS="$RUNNER_TEMP/release.p12"
+          ( umask 077; printf '%s' "$KS_B64" | base64 -d > "$KS" )
+          BT="$ANDROID_HOME/build-tools/$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -1)"
+          APK_IN="mobile/android/app/build/outputs/apk/release/app-release-unsigned.apk"
+          AAB_IN="mobile/android/app/build/outputs/bundle/release/app-release.aab"
+          mkdir -p out
+          "$BT/zipalign" -p -f 4 "$APK_IN" aligned.apk
+          "$BT/apksigner" sign --ks "$KS" --ks-type PKCS12 --ks-key-alias liyatest --ks-pass env:KS_PASS --key-pass env:KS_PASS --out "out/liya-luca-test-${VC}.apk" aligned.apk
+          jarsigner -keystore "$KS" -storetype PKCS12 -storepass:env KS_PASS -keypass:env KS_PASS -sigalg SHA256withRSA -digestalg SHA-256 -signedjar "out/liya-luca-test-${VC}.aab" "$AAB_IN" liyatest
+          rm -f "$KS"
+
+      - name: Verify
+        shell: bash
+        env:
+          VC: ${{ steps.meta.outputs.version_code }}
+          VN: ${{ steps.meta.outputs.version_name }}
+        run: |
+          set -euo pipefail
+          BT="$ANDROID_HOME/build-tools/$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -1)"
+          APK="out/liya-luca-test-${VC}.apk"
+          AAB="out/liya-luca-test-${VC}.aab"
+
+          APKSIGNER_OUT=$("$BT/apksigner" verify --verbose --print-certs "$APK")
+          printf '%s\n' "$APKSIGNER_OUT"
+          if ! printf '%s\n' "$APKSIGNER_OUT" | grep -q 'Verified using v2 scheme (APK Signature Scheme v2): true'; then
+            echo "Signature v2 non vérifiée" >&2
+            exit 1
+          fi
+
+          jarsigner -verify -strict "$AAB"
+
+          BADGING=$("$BT/aapt2" dump badging "$APK")
+          BADGE_VC=$(printf '%s\n' "$BADGING" | grep -oE "versionCode='[0-9]+'" | head -1 | grep -oE "[0-9]+")
+          BADGE_VN=$(printf '%s\n' "$BADGING" | grep -oE "versionName='[^']*'" | head -1 | sed "s/versionName='//; s/'$//")
+          if [ "$BADGE_VC" != "$VC" ]; then echo "versionCode mismatch: $BADGE_VC != $VC" >&2; exit 1; fi
+          if [ "$BADGE_VN" != "$VN" ]; then echo "versionName mismatch: $BADGE_VN != $VN" >&2; exit 1; fi
+
+          SIGNER_SHA=$(printf '%s\n' "$APKSIGNER_OUT" | grep -i 'Signer #1 certificate SHA-256 digest:' | head -1 | sed 's/.*digest:[[:space:]]*//' | tr -d '[:space:]' | tr 'A-F' 'a-f' | tr -d ':')
+          if [ -z "$SIGNER_SHA" ]; then echo "Impossible d'extraire le digest du certificat" >&2; exit 1; fi
+
+          cp "mobile/android/release-notes/${VC}.txt" out/release-notes.txt
+
+          APK_SHA=$(sha256sum "$APK" | cut -d' ' -f1)
+          AAB_SHA=$(sha256sum "$AAB" | cut -d' ' -f1)
+          NOTES_SHA=$(sha256sum out/release-notes.txt | cut -d' ' -f1)
+
+          jq -n \
+            --arg application_id "app.liya.lucatest" \
+            --argjson version_code "$VC" \
+            --arg version_name "$VN" \
+            --arg apk "$(basename "$APK")" \
+            --arg apk_sha256 "$APK_SHA" \
+            --arg aab "$(basename "$AAB")" \
+            --arg aab_sha256 "$AAB_SHA" \
+            --arg signer_cert_sha256 "$SIGNER_SHA" \
+            --arg release_notes_sha256 "$NOTES_SHA" \
+            --arg commit "${{ github.sha }}" \
+            --arg run_id "${{ github.run_id }}" \
+            '{application_id: $application_id, version_code: $version_code, version_name: $version_name, apk: $apk, apk_sha256: $apk_sha256, aab: $aab, aab_sha256: $aab_sha256, signer_cert_sha256: $signer_cert_sha256, apk_signature_v2: true, aab_jar_verified: true, release_notes_sha256: $release_notes_sha256, commit: $commit, run_id: $run_id}' \
+            > out/release-manifest.json
+
+      - name: Cleanup keystore
+        if: always()
+        shell: bash
+        run: |
+          rm -f "$RUNNER_TEMP/release.p12" || true
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: store-release-vc${{ steps.meta.outputs.version_code }}
+          path: out/
+          retention-days: 30
+          if-no-files-found: error
