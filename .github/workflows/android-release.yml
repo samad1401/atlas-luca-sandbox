@@ -103,7 +103,6 @@ jobs:
             exit 1
           fi
 
-          jarsigner -verify -strict "$AAB"
 
           BADGING=$("$BT/aapt2" dump badging "$APK")
           BADGE_VC=$(printf '%s\n' "$BADGING" | grep -oE "versionCode='[0-9]+'" | head -1 | grep -oE "[0-9]+")
@@ -111,8 +110,15 @@ jobs:
           if [ "$BADGE_VC" != "$VC" ]; then echo "versionCode mismatch: $BADGE_VC != $VC" >&2; exit 1; fi
           if [ "$BADGE_VN" != "$VN" ]; then echo "versionName mismatch: $BADGE_VN != $VN" >&2; exit 1; fi
 
-          SIGNER_SHA=$(printf '%s\n' "$APKSIGNER_OUT" | grep -i 'Signer #1 certificate SHA-256 digest:' | head -1 | sed 's/.*digest:[[:space:]]*//' | tr -d '[:space:]' | tr 'A-F' 'a-f' | tr -d ':')
+          SIGNER_SHA=$(printf '%s\n' "$APKSIGNER_OUT" | grep -m1 -E 'certificate SHA-256 digest:' | sed 's/.*digest:[[:space:]]*//' | tr -d '[:space:]' | tr 'A-F' 'a-f' | tr -d ':')
           if [ -z "$SIGNER_SHA" ]; then echo "Impossible d'extraire le digest du certificat" >&2; exit 1; fi
+
+          # AAB : signature JAR vérifiée et même certificat que l'APK (clé de test auto-signée, comme une clé d'importation Play).
+          JV=$(jarsigner -verify "$AAB")
+          printf '%s\n' "$JV"
+          printf '%s\n' "$JV" | grep -q '^jar verified\.'
+          AAB_CERT=$(keytool -printcert -jarfile "$AAB" | grep -m1 'SHA256:' | sed 's/.*SHA256:[[:space:]]*//' | tr -d ': ' | tr 'A-F' 'a-f')
+          if [ "$AAB_CERT" != "$SIGNER_SHA" ]; then echo "Certificat AAB différent de l'APK" >&2; exit 1; fi
 
           cp "mobile/android/release-notes/${VC}.txt" out/release-notes.txt
 
