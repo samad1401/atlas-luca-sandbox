@@ -1,4 +1,5 @@
 import { handler } from "../../src/main.ts";
+// deno-lint-ignore no-import-prefix
 import { assertEquals } from "https://deno.land/std@0.224.0/assert/mod.ts";
 
 Deno.test("integration: /health returns ok", async () => {
