@@ -1,0 +1,1 @@
+Correctif de test : libellé du bandeau de version
